@@ -25,11 +25,16 @@ const tmdbGet = async (path) => {
 //   movie:  { kind, tmdbId, imdbId, title (de), originalTitle, year }
 //   series: same + season, episode
 export const resolveId = async (type, stremioId) => {
-  const [rawId, seasonStr, episodeStr] = stremioId.split(':');
+  // Stremio ids: tt1234567, tt1234567:1:2, tmdb:123, tmdb:123:1:2
+  let rest = stremioId;
+  let prefix = '';
+  if (rest.startsWith('tmdb:')) { prefix = 'tmdb:'; rest = rest.slice(5); }
+  const [base, seasonStr, episodeStr] = rest.split(':');
+  const rawId = prefix + base;
   const season = seasonStr !== undefined ? parseInt(seasonStr, 10) : undefined;
   const episode = episodeStr !== undefined ? parseInt(episodeStr, 10) : undefined;
 
-  return cache.wrap(`id:${type}:${rawId}`, DAY, async () => {
+  return cache.wrap(`id:${type}:${rawId}:${season}:${episode}`, DAY, async () => {
     let tmdbId;
     let imdbId;
 
