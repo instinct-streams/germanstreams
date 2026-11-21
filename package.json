@@ -1,0 +1,13 @@
+{
+  "name": "germanstreams",
+  "version": "1.0.0",
+  "description": "German streaming sources for Stremio (MeineCloud, MegaKino, Filmpalast). Self-contained, zero dependencies.",
+  "type": "module",
+  "private": true,
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node test/e2e.js"
+  },
+  "license": "MIT"
+}
