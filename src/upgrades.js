@@ -95,7 +95,10 @@ export const resolveUpgraded = async (embed) => {
   try {
     if (supportsExtra(embed.url)) return await byse(embed);
     let streams = await originalResolve(embed);
-    if (/mixdrop|mxdrop|dr0pstream|dropload|superplayer|supervideo/i.test(embed.url)) streams = streams.map((s) => ({ ...s, relay: true }));
+    if (/mixdrop|mxdrop/i.test(embed.url)) streams = streams.map((s) => ({ ...s, relay: true }));
+    if (/dr0pstream|dropload|superplayer|supervideo/i.test(embed.url)) {
+      streams = streams.map((s) => ({ ...s, headers: { ...s.headers, 'User-Agent': USER_AGENT, 'Accept-Language': 'de-DE,de;q=0.9,en;q=0.7' } }));
+    }
     if (/gxplayer/i.test(embed.url)) return streams.map((s) => ({ ...s, relay: true }));
     if (/dr0pstream|dropload|superplayer|supervideo/i.test(embed.url)) {
       const optimized = await Promise.all(streams.map(async (s) => cache.wrap(`rendition:${s.url}`, 15 * 60_000, async () => {
