@@ -17,7 +17,7 @@ const ADDON_ID = 'community.germanstreams.clean';
 
 const manifest = {
   id: ADDON_ID,
-  version: '1.1.0',
+  version: '1.1.1',
   name: 'GermanStreams',
   description: 'Deutsche Streams von MeineCloud, MegaKino, Filmpalast und Filmo - eigenstaendiges, schnelles Addon.',
   logo: 'https://upload.wikimedia.org/wikipedia/en/thumb/b/ba/Flag_of_Germany.svg/320px-Flag_of_Germany.svg.png',
@@ -59,7 +59,7 @@ const getStreams = async (type, id, base) => {
     seen.add(item.resolved.url);
     const stream = toStremioStream({ ...item, info });
     if (item.resolved.relay) {
-      stream.url = playbackUrl(item.resolved.url, base);
+      stream.url = playbackUrl(item.resolved.url, base, item.resolved.format === 'mp4' ? 'mp4' : 'playlist', item.resolved.headers?.Referer);
       delete stream.behaviorHints.proxyHeaders;
     }
     streams.push(stream);
