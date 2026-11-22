@@ -35,7 +35,7 @@ const baseTitle = (alt) => alt.replace(/\s*[-–]\s*(staffel|season)\s*\d+\s*$/i
 
 // Find the xCine post URL whose title and kind match. Returns the page URL and the
 // IMDb id embedded in the page, checking up to `maxCandidates` search hits.
-const searchPost = async (info) => {
+const nativeSearchPost = async (info) => {
   const targets = new Set([info.title, info.originalTitle].filter(Boolean).map(norm));
   const titles = [...new Set([info.originalTitle, info.title].filter(Boolean))];
   for (const title of titles) {
@@ -73,6 +73,98 @@ const searchPost = async (info) => {
     }
   }
   return null;
+};
+
+// Discover posts through xCine's own complete sitemap, not a third-party proxy.
+// Keep one shared index for all titles; a failed refresh must not erase good data.
+const INDEX_TTL = 6 * 60 * 60_000;
+let sitemap = [];
+let sitemapAt = 0;
+let sitemapRetryAt = 0;
+let sitemapPending;
+let nativeBlockedUntil = 0;
+
+export const catalogTitle = (url) => {
+  const slug = new URL(url).pathname.replace(/^\/\d+-/, '').replace(/\.html$/, '');
+  return slug
+    .replace(/-(?:staffel|season)-\d+.*$/, '')
+    .replace(/-(?:stream(?:en)?|kostenlos|serien-stream|hd-kostenlos|online|kinox|deutsch)(?:-.*)?$/, '')
+    .replace(/-\d{4}$/, '');
+};
+
+export const parseSitemap = (xml) => [...new Set(
+  [...xml.matchAll(/<loc>\s*(https:\/\/xcine\.hair\/\d+-[^<]+\.html)\s*<\/loc>/g)]
+    .map((m) => m[1]),
+)].map((url) => ({ url, title: norm(catalogTitle(url)) }));
+
+const refreshSitemap = () => {
+  if (sitemapPending) return sitemapPending;
+  if (Date.now() < sitemapRetryAt) return Promise.resolve(sitemap);
+  sitemapPending = (async () => {
+    try {
+      const { text } = await fetchText(`${BASE}/news_pages.xml`, { timeoutMs: 3_500 });
+      if (text.length > 12_000_000) throw new Error('oversized sitemap');
+      const entries = parseSitemap(text);
+      if (entries.length < 100) throw new Error('invalid or incomplete sitemap');
+      sitemap = entries;
+      sitemapAt = Date.now();
+      sitemapRetryAt = 0;
+      console.log(`[xCine] catalog loaded: ${entries.length} posts`);
+    } catch (error) {
+      sitemapRetryAt = Date.now() + 60_000;
+      console.warn(`[xCine] catalog refresh: ${error.message}`);
+    }
+    return sitemap;
+  })().finally(() => { sitemapPending = undefined; });
+  return sitemapPending;
+};
+
+export const catalogCandidates = (entries, info) => {
+  const titles = [info.title, info.originalTitle].filter(Boolean);
+  const targets = [...new Set(titles.flatMap((t) => [norm(t), norm(t.replace(/ä/g, 'ae').replace(/ö/g, 'oe').replace(/ü/g, 'ue'))]))];
+  return entries.map((entry) => ({ ...entry, score: Math.min(...targets.map((t) =>
+    entry.title === t ? 0 : t.length >= 4 && entry.title.startsWith(t) ? 1 : 9,
+  )) })).filter((e) => e.score < 9).sort((a, b) => a.score - b.score).slice(0, 8);
+};
+
+export const postIdentity = (page) => {
+  const raw = page.match(/var rawId = \('((?:tt)?\d+)'/)?.[1]
+    ?? page.match(/devideosrc\.co\/(?:movie|serial)\/(tt\d+)/)?.[1];
+  return raw ? (raw.startsWith('tt') ? raw : `tt${raw}`) : null;
+};
+
+const sitemapSearchPost = async (info) => {
+  // The IMDb id is mandatory on this path. A slug is only a discovery hint,
+  // never enough to identify a film or distinguish a remake from a series.
+  if (!info.imdbId) return null;
+  if (!sitemap.length) await refreshSitemap();
+  else if (Date.now() - sitemapAt > INDEX_TTL) void refreshSitemap();
+  const candidates = catalogCandidates(sitemap, info);
+  for (let i = 0; i < candidates.length; i += 4) {
+    const results = await Promise.all(candidates.slice(i, i + 4).map(async ({ url }) => {
+      try {
+        const { text } = await fetchText(url, { timeoutMs: 1_500 });
+        const imdbId = postIdentity(text);
+        return imdbId === info.imdbId ? { postUrl: url, imdbId } : null;
+      } catch { return null; }
+    }));
+    const match = results.find(Boolean);
+    if (match) return match;
+  }
+  return null;
+};
+
+const searchPost = async (info) => {
+  const post = await sitemapSearchPost(info);
+  if (post) return post;
+  // Preserve native search for newly added posts and unusual slugs. Cool down
+  // host-wide denials instead of making every title repeat a blocked request.
+  if (Date.now() < nativeBlockedUntil) return null;
+  try { return await nativeSearchPost(info); }
+  catch (error) {
+    if (error.status === 403 || error.status === 429) nativeBlockedUntil = Date.now() + 15 * 60_000;
+    return null;
+  }
 };
 
 // A post identifies the whole series. Reuse it across episode requests and
