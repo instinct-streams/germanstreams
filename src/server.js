@@ -7,7 +7,8 @@
 // this build has no options, so it is accepted and ignored.
 import http from 'node:http';
 import { SOURCES } from './sources/index.js';
-import { resolveEmbed, hasResolver } from './resolvers/index.js';
+import { hasResolver } from './resolvers/index.js';
+import { filmo, supportsExtra, resolveUpgraded, playbackUrl, handlePlayback } from './upgrades.js';
 import { resolveId } from './lib/tmdb.js';
 import { toStremioStream } from './lib/streams.js';
 
@@ -16,9 +17,9 @@ const ADDON_ID = 'community.germanstreams.clean';
 
 const manifest = {
   id: ADDON_ID,
-  version: '1.0.0',
+  version: '1.1.0',
   name: 'GermanStreams',
-  description: 'Deutsche Streams von MeineCloud, MegaKino und Filmpalast - eigenstaendiges, schnelles Addon.',
+  description: 'Deutsche Streams von MeineCloud, MegaKino, Filmpalast und Filmo - eigenstaendiges, schnelles Addon.',
   logo: 'https://upload.wikimedia.org/wikipedia/en/thumb/b/ba/Flag_of_Germany.svg/320px-Flag_of_Germany.svg.png',
   resources: ['stream'],
   types: ['movie', 'series'],
@@ -32,7 +33,7 @@ const SOURCE_TIMEOUT_MS = 7_500;
 const withTimeout = (promise, ms, fallback) =>
   Promise.race([promise, new Promise((resolve) => setTimeout(() => resolve(fallback), ms))]);
 
-const getStreams = async (type, id) => {
+const getStreams = async (type, id, base) => {
   const info = await resolveId(type, id);
   info.displayTitle =
     info.kind === 'series' && info.season !== undefined
@@ -41,38 +42,38 @@ const getStreams = async (type, id) => {
         ? `${info.title} (${info.year})`
         : info.title;
 
-  const eligible = SOURCES.filter((s) => s.kinds.includes(info.kind));
-  const perSource = await Promise.allSettled(
-    eligible.map((source) => withTimeout(source.getEmbeds(info), SOURCE_TIMEOUT_MS, [])),
-  );
-
-  const embeds = [];
-  perSource.forEach((result, i) => {
-    if (result.status !== 'fulfilled' || !Array.isArray(result.value)) return;
-    for (const embed of result.value) {
-      if (hasResolver(embed.url)) embeds.push({ ...embed, sourceLabel: eligible[i].label });
-    }
-  });
-
-  const resolved = await Promise.all(embeds.map((embed) => resolveEmbed(embed)));
-
+  const eligible = [...SOURCES, filmo].filter((s) => s.kinds.includes(info.kind));
+  // Resolve each source immediately instead of waiting for the slowest search.
+  const perSource = await Promise.all(eligible.map(async (source) => {
+    try {
+      const embeds = await withTimeout(source.getEmbeds(info), SOURCE_TIMEOUT_MS, []);
+      const valid = embeds.filter((e) => hasResolver(e.url) || supportsExtra(e.url));
+      const lists = await Promise.all(valid.map((e) => withTimeout(resolveUpgraded(e), 9000, [])));
+      return lists.flatMap((list, i) => list.map((r) => ({ resolved: r, embed: valid[i], sourceLabel: source.label })));
+    } catch { return []; }
+  }));
   const streams = [];
   const seen = new Set();
-  resolved.forEach((list, i) => {
-    for (const r of list) {
-      if (seen.has(r.url)) continue;
-      seen.add(r.url);
-      streams.push(toStremioStream({ resolved: r, embed: embeds[i], info, sourceLabel: embeds[i].sourceLabel }));
+  for (const item of perSource.flat()) {
+    if (seen.has(item.resolved.url)) continue;
+    seen.add(item.resolved.url);
+    const stream = toStremioStream({ ...item, info });
+    if (item.resolved.relay) {
+      stream.url = playbackUrl(item.resolved.url, base);
+      delete stream.behaviorHints.proxyHeaders;
     }
-  });
-
-  streams.sort((a, b) => (b.url.includes('.m3u8') ? 1 : 0) - (a.url.includes('.m3u8') ? 1 : 0));
+    streams.push(stream);
+  }
+  // Fast native HLS first. Keep all alternatives available, with SuperVideo
+  // ahead of the often throttled Dropload mirror. No quality is removed.
+  const score = (s) => /Filmpalast/.test(s.name) ? 0 : /Filmo/.test(s.name) ? 1 : /SuperVideo/.test(s.name) ? 2 : /Mixdrop/.test(s.name) ? 3 : /Dropload/.test(s.name) ? 4 : 5;
+  streams.sort((a, b) => score(a) - score(b));
   return streams;
 };
 
 const LANDING = `<!doctype html><html lang="de"><head><meta charset="utf-8"><title>GermanStreams</title></head>
 <body style="font-family:sans-serif;max-width:40em;margin:4em auto"><h1>GermanStreams</h1>
-<p>Stremio-Addon fuer deutsche Streams (MeineCloud, MegaKino, Filmpalast).</p>
+<p>Stremio-Addon fuer deutsche Streams (MeineCloud, MegaKino, Filmpalast, Filmo).</p>
 <p>Manifest: <a href="/manifest.json">/manifest.json</a></p></body></html>`;
 
 const sendJson = (res, code, obj) => {
@@ -89,6 +90,8 @@ const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, 'http://localhost');
     const path = url.pathname;
+    const base = (process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`).replace(/\/$/, '');
+    if (await handlePlayback(req, res, base)) return;
 
     if (path === '/' || path === '/configure') {
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
@@ -108,7 +111,7 @@ const server = http.createServer(async (req, res) => {
     if (streamMatch) {
       const [, type, id] = streamMatch;
       try {
-        const streams = await getStreams(type, decodeURIComponent(id));
+        const streams = await getStreams(type, decodeURIComponent(id), base);
         sendJson(res, 200, { streams });
       } catch (err) {
         sendJson(res, 200, { streams: [] });
