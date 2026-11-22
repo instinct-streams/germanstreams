@@ -95,19 +95,33 @@ export const resolveUpgraded = async (embed) => {
   try {
     if (supportsExtra(embed.url)) return await byse(embed);
     let streams = await originalResolve(embed);
-    if (/mixdrop|mxdrop|dr0pstream|dropload/i.test(embed.url)) streams = streams.map((s) => ({ ...s, relay: true }));
+    if (/mixdrop|mxdrop|dr0pstream|dropload|superplayer|supervideo/i.test(embed.url)) streams = streams.map((s) => ({ ...s, relay: true }));
     if (/gxplayer/i.test(embed.url)) return streams.map((s) => ({ ...s, relay: true }));
     if (/dr0pstream|dropload|superplayer|supervideo/i.test(embed.url)) {
-      return await Promise.all(streams.map(async (s) => cache.wrap(`rendition:${s.url}`, 15 * 60_000, async () => {
+      const optimized = await Promise.all(streams.map(async (s) => cache.wrap(`rendition:${s.url}`, 15 * 60_000, async () => {
         try {
           const { text, finalUrl } = await fetchText(s.url, { headers: s.headers, timeoutMs: 2500 });
           const variants = [...text.matchAll(/#EXT-X-STREAM-INF:([^\n]+)\r?\n([^#\s][^\r\n]*)/g)];
           // A single rendition is common here. Skip the extra master request in the player.
           if (variants.length !== 1) return s;
           const height = Number(variants[0][1].match(/RESOLUTION=\d+x(\d+)/)?.[1]) || s.height;
-          return { ...s, url: new URL(variants[0][2].trim(), finalUrl).href, height };
-        } catch { return s; }
+          const mediaUrl = new URL(variants[0][2].trim(), finalUrl).href;
+          if (/dr0pstream|dropload/i.test(embed.url)) {
+            // A playlist alone can answer 200 while its segments are blocked.
+            // Validate the video request with the same headers as the relay.
+            // Test a tiny range before offering it, so broken mirrors stay hidden.
+            const { text: media } = await fetchText(mediaUrl, { headers: s.headers, timeoutMs: 2500 });
+            const first = media.split(/\r?\n/).find((line) => line.trim() && !line.startsWith('#'));
+            if (!first) return null;
+            const probe = await fetchResponse(new URL(first.trim(), mediaUrl).href, { headers: { ...s.headers, Range: 'bytes=0-187' }, timeoutMs: 2500 });
+            const ok = probe.ok;
+            await probe.body?.cancel();
+            if (!ok) return null;
+          }
+          return { ...s, url: mediaUrl, height };
+        } catch { return /dr0pstream|dropload/i.test(embed.url) ? null : s; }
       })));
+      return optimized.filter(Boolean);
     }
     return streams;
   } catch { return []; }
@@ -121,7 +135,7 @@ const relayKey = process.env.TMDB_ACCESS_TOKEN || randomBytes(32);
 const allowed = (url) => {
   const u = new URL(url);
   return u.protocol === 'https:' && !u.username && !u.password && !u.port &&
-    (/^(?:watch|s\d+)\.gxplayer\.xyz$/.test(u.hostname) || /^[a-z0-9-]+\.(?:owphbf24\.com|dropcdn\.io|mxcontent\.net)$/.test(u.hostname)) && /^\/(?:hls2|m3u8|stream|ts|v2)\//.test(u.pathname);
+    (/^(?:watch|s\d+)\.gxplayer\.xyz$/.test(u.hostname) || /^[a-z0-9-]+\.(?:owphbf24\.com|dropcdn\.io|mxcontent\.net|supercdn\.ws)$/.test(u.hostname)) && /^\/(?:hls2|m3u8|stream|ts|v2)\//.test(u.pathname);
 };
 const signature = (value) => createHmac('sha256', relayKey).update(value).digest('base64url');
 export const playbackUrl = (url, base, kind = 'playlist', referer = 'https://watch.gxplayer.xyz/') => {
@@ -159,7 +173,7 @@ export const handlePlayback = async (req, res, base) => {
     if (expected.length !== given.length || !timingSafeEqual(expected, given)) throw new Error('invalid signature');
     const data = JSON.parse(Buffer.from(value, 'base64url'));
     if (data.e < Date.now() / 1000 || !allowed(data.u) || !['playlist', 'segment', 'key', 'mp4'].includes(data.k)) throw new Error('expired ticket');
-    const headers = { Referer: data.r || 'https://watch.gxplayer.xyz/', 'User-Agent': USER_AGENT };
+    const headers = { Referer: data.r || 'https://watch.gxplayer.xyz/', 'User-Agent': USER_AGENT, 'Accept-Language': 'de-DE,de;q=0.9,en;q=0.7' };
     if (req.headers.range && /^bytes=\d*-\d*$/.test(req.headers.range)) headers.Range = req.headers.range;
     const upstream = await relayFetch(data.u, headers);
     if (!upstream.ok) { res.writeHead(upstream.status, { 'Access-Control-Allow-Origin': '*' }); res.end(); return true; }
