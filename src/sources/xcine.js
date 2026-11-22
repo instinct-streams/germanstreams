@@ -9,6 +9,8 @@ import { TtlCache } from '../lib/cache.js';
 const BASE = 'https://xcine.hair';
 const PLAYER = 'https://devideosrc.co';
 const cache = new TtlCache();
+const postCache = new TtlCache();
+const pendingPosts = new Map();
 const POSITIVE_TTL = 30 * 60 * 1000;
 const NEGATIVE_TTL = 5 * 60 * 1000;
 
@@ -25,14 +27,21 @@ const baseTitle = (alt) => alt.replace(/\s*[-–]\s*(staffel|season)\s*\d+\s*$/i
 
 // Find the xCine post URL whose title and kind match. Returns the page URL and the
 // IMDb id embedded in the page, checking up to `maxCandidates` search hits.
-const findPost = async (info) => {
+const searchPost = async (info) => {
   const targets = new Set([info.title, info.originalTitle].filter(Boolean).map(norm));
-  const titles = [...new Set([info.title, info.originalTitle].filter(Boolean))];
+  const titles = [...new Set([info.originalTitle, info.title].filter(Boolean))];
   for (const title of titles) {
-    const { text: html } = await fetchText(
-      `${BASE}/?do=search&subaction=search&story=${encodeURIComponent(title)}`,
-      { timeoutMs: 8_000 },
-    );
+    let html;
+    try {
+      ({ text: html } = await fetchText(
+        `${BASE}/?do=search&subaction=search&story=${encodeURIComponent(title)}`,
+        { timeoutMs: 3_000 },
+      ));
+    } catch (error) {
+      console.warn(`[xCine] search ${info.imdbId ?? info.tmdbId}: ${error.message}`);
+      if (error.status === 429) throw error;
+      continue;
+    }
     const items = [
       ...html.matchAll(
         /<a class="movie-item__link" href="(https:\/\/xcine\.hair\/[^"]+)"([\s\S]*?)movie-item__meta ws-nowrap">\s*<span>([^<]*)<\/span>\s*<span>([^<]*)<\/span>/g,
@@ -42,7 +51,7 @@ const findPost = async (info) => {
       const [, href, inner, , cat] = m;
       const alt = inner.match(/alt="([^"]*)"/)?.[1] ?? '';
       if (!targets.has(norm(baseTitle(alt)))) continue;
-      const isSeries = /^serien\b/i.test(cat.trim());
+      const isSeries = /\bserien\b/i.test(cat.trim());
       if ((info.kind === 'series') !== isSeries) continue;
       const { text: page } = await fetchText(href, { timeoutMs: 8_000 });
       const raw =
@@ -56,6 +65,21 @@ const findPost = async (info) => {
     }
   }
   return null;
+};
+
+// A post identifies the whole series. Reuse it across episode requests and
+// coalesce concurrent lookups instead of repeating catalog searches per episode.
+const findPost = async (info) => {
+  const key = `${info.kind}:${info.imdbId ?? info.tmdbId}`;
+  const hit = postCache.get(key);
+  if (hit !== undefined) return hit;
+  if (pendingPosts.has(key)) return pendingPosts.get(key);
+  const pending = searchPost(info).then((post) => {
+    postCache.set(key, post, post ? 6 * 60 * 60_000 : NEGATIVE_TTL);
+    return post;
+  }).finally(() => pendingPosts.delete(key));
+  pendingPosts.set(key, pending);
+  return pending;
 };
 
 export const xcine = {
