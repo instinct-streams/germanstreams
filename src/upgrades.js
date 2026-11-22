@@ -38,8 +38,8 @@ export const filmo = {
         const html = await response.text();
         const title = plain(html.match(/<h1\b[^>]*>([\s\S]*?)<\/h1>/)?.[1] ?? '');
         if (!targets.has(norm(title))) continue;
-        const releaseYear = html.match(/Erscheinungsdatum[\s\S]{0,160}?(\d{4})-/)?.[1];
-        if (info.year && releaseYear && Number(releaseYear) !== info.year) continue;
+        const releaseYear = html.match(/Erscheinungsdatum[\s\S]{0,500}?(\d{4})-/)?.[1];
+        if (info.year && Number(releaseYear) !== info.year) continue;
         const cookie = response.headers.getSetCookie().map((c) => c.split(';')[0]).join('; ');
         const xsrf = cookie.match(/(?:^|; )XSRF-TOKEN=([^;]+)/)?.[1];
         if (!xsrf) continue;
@@ -87,14 +87,15 @@ const byse = async ({ url }) => cache.wrap(`byse:${url}`, 5 * 60_000, async () =
   const data = JSON.parse(Buffer.concat([decipher.update(payload.subarray(0, -16)), decipher.final()]));
   return (data.sources ?? []).filter((s) => typeof s.url === 'string' && s.url.startsWith('https://')).map((s) => ({
     url: s.url, format: /mpegurl|m3u8/.test(s.mime_type + s.url) ? 'hls' : 'mp4', height: s.height,
-    headers: { Referer: `${u.origin}/`, 'User-Agent': USER_AGENT }, resolverLabel: 'Byse',
+    headers: { Referer: `${u.origin}/`, 'User-Agent': USER_AGENT }, resolverLabel: 'Byse', relay: true,
   }));
 });
 
 export const resolveUpgraded = async (embed) => {
   try {
     if (supportsExtra(embed.url)) return await byse(embed);
-    const streams = await originalResolve(embed);
+    let streams = await originalResolve(embed);
+    if (/mixdrop|mxdrop|dr0pstream|dropload/i.test(embed.url)) streams = streams.map((s) => ({ ...s, relay: true }));
     if (/gxplayer/i.test(embed.url)) return streams.map((s) => ({ ...s, relay: true }));
     if (/dr0pstream|dropload|superplayer|supervideo/i.test(embed.url)) {
       return await Promise.all(streams.map(async (s) => cache.wrap(`rendition:${s.url}`, 15 * 60_000, async () => {
@@ -112,26 +113,31 @@ export const resolveUpgraded = async (embed) => {
   } catch { return []; }
 };
 
+// Some hosts bind their URLs to the server network and require a relay.
 // GXPlayer serves HLS as .txt and TS as .html/font, which native players reject.
-// Normalize playlists and media MIME types. Only signed, short-lived GX URLs are
+// Normalize playlists and media MIME types. Only signed, short-lived host URLs are
 // accepted, never arbitrary destinations. Video is streamed, never buffered in RAM.
 const relayKey = process.env.TMDB_ACCESS_TOKEN || randomBytes(32);
 const allowed = (url) => {
   const u = new URL(url);
   return u.protocol === 'https:' && !u.username && !u.password && !u.port &&
-    /^(?:watch|s\d+)\.gxplayer\.xyz$/.test(u.hostname) && /^\/(?:m3u8|stream|ts)\//.test(u.pathname);
+    (/^(?:watch|s\d+)\.gxplayer\.xyz$/.test(u.hostname) || /^[a-z0-9-]+\.(?:owphbf24\.com|dropcdn\.io|mxcontent\.net)$/.test(u.hostname)) && /^\/(?:hls2|m3u8|stream|ts|v2)\//.test(u.pathname);
 };
 const signature = (value) => createHmac('sha256', relayKey).update(value).digest('base64url');
-export const playbackUrl = (url, base, kind = 'playlist') => {
+export const playbackUrl = (url, base, kind = 'playlist', referer = 'https://watch.gxplayer.xyz/') => {
   if (!allowed(url)) throw new Error('unsupported playback host');
-  const value = Buffer.from(JSON.stringify({ u: url, k: kind, e: Math.floor(Date.now() / 1000) + 43200 })).toString('base64url');
-  return `${base}/play/${value}.${signature(value)}/${kind === 'playlist' ? 'index.m3u8' : kind === 'key' ? 'key.bin' : 'segment.ts'}`;
+  const value = Buffer.from(JSON.stringify({ u: url, k: kind, r: referer, e: Math.floor(Date.now() / 1000) + 43200 })).toString('base64url');
+  return `${base}/play/${value}.${signature(value)}/${kind === 'playlist' ? 'index.m3u8' : kind === 'key' ? 'key.bin' : kind === 'mp4' ? 'video.mp4' : 'segment.ts'}`;
 };
 const relayFetch = async (url, headers) => {
   let current = url;
   for (let n = 0; n < 5; n++) {
     if (!allowed(current)) throw new Error('unsupported redirect');
-    const r = await fetch(current, { headers, redirect: 'manual', signal: AbortSignal.timeout(45000) });
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 45000);
+    let r;
+    try { r = await fetch(current, { headers, redirect: 'manual', signal: controller.signal }); }
+    finally { clearTimeout(timer); }
     if (![301, 302, 303, 307, 308].includes(r.status)) return r;
     const next = r.headers.get('location');
     if (!next) return r;
@@ -152,8 +158,8 @@ export const handlePlayback = async (req, res, base) => {
     const given = Buffer.from(sig ?? '');
     if (expected.length !== given.length || !timingSafeEqual(expected, given)) throw new Error('invalid signature');
     const data = JSON.parse(Buffer.from(value, 'base64url'));
-    if (data.e < Date.now() / 1000 || !allowed(data.u) || !['playlist', 'segment', 'key'].includes(data.k)) throw new Error('expired ticket');
-    const headers = { Referer: 'https://watch.gxplayer.xyz/', 'User-Agent': USER_AGENT };
+    if (data.e < Date.now() / 1000 || !allowed(data.u) || !['playlist', 'segment', 'key', 'mp4'].includes(data.k)) throw new Error('expired ticket');
+    const headers = { Referer: data.r || 'https://watch.gxplayer.xyz/', 'User-Agent': USER_AGENT };
     if (req.headers.range && /^bytes=\d*-\d*$/.test(req.headers.range)) headers.Range = req.headers.range;
     const upstream = await relayFetch(data.u, headers);
     if (!upstream.ok) { res.writeHead(upstream.status, { 'Access-Control-Allow-Origin': '*' }); res.end(); return true; }
@@ -162,15 +168,15 @@ export const handlePlayback = async (req, res, base) => {
       if (!text.trimStart().startsWith('#EXTM3U')) throw new Error('invalid upstream playlist');
       const rewritten = text.split(/\r?\n/).map((line) => {
         if (!line.trim()) return line;
-        if (line.startsWith('#')) return line.replace(/URI="([^"]+)"/g, (_, uri) => `URI="${playbackUrl(new URL(uri, data.u).href, base, /#EXT-X-KEY/.test(line) ? 'key' : 'playlist')}"`);
+        if (line.startsWith('#')) return line.replace(/URI="([^"]+)"/g, (_, uri) => `URI="${playbackUrl(new URL(uri, data.u).href, base, /#EXT-X-KEY/.test(line) ? 'key' : 'playlist', data.r)}"`);
         const child = new URL(line.trim(), data.u).href;
         const kind = /\.m3u8(?:\?|$)|\/stream\//.test(child) ? 'playlist' : 'segment';
-        return playbackUrl(child, base, kind);
+        return playbackUrl(child, base, kind, data.r);
       }).join('\n');
       res.writeHead(200, { 'Content-Type': 'application/vnd.apple.mpegurl', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'public, max-age=60' });
       res.end(req.method === 'HEAD' ? '' : rewritten);
     } else {
-      const outHeaders = { 'Content-Type': data.k === 'key' ? 'application/octet-stream' : 'video/mp2t', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'public, max-age=600' };
+      const outHeaders = { 'Content-Type': data.k === 'key' ? 'application/octet-stream' : data.k === 'mp4' ? 'video/mp4' : 'video/mp2t', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'public, max-age=600' };
       for (const h of ['content-length', 'content-range', 'accept-ranges']) if (upstream.headers.has(h)) outHeaders[h] = upstream.headers.get(h);
       res.writeHead(upstream.status, outHeaders);
       if (req.method === 'HEAD') { await upstream.body?.cancel(); res.end(); }
