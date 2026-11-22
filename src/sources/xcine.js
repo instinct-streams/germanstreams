@@ -14,6 +14,14 @@ const pendingPosts = new Map();
 const POSITIVE_TTL = 30 * 60 * 1000;
 const NEGATIVE_TTL = 5 * 60 * 1000;
 
+// Catalog entries checked against xCine's own embedded IMDb player on 2026-11-22.
+// The catalog search denies some hosting-provider IPs. These verified records
+// remain usable without that search; playback links still come fresh from the player.
+const VERIFIED_POSTS = new Map([
+  ['series:tt31510819', { postUrl: 'https://xcine.hair/25599-mobland-stream-deutsch-kostenlos.html', imdbId: 'tt31510819' }],
+  ['series:tt2802850', { postUrl: 'https://xcine.hair/26332-fargo-stream-deutsch-kostenlos.html', imdbId: 'tt2802850' }],
+]);
+
 const norm = (s) =>
   s
     .normalize('NFD')
@@ -39,7 +47,7 @@ const searchPost = async (info) => {
       ));
     } catch (error) {
       console.warn(`[xCine] search ${info.imdbId ?? info.tmdbId}: ${error.message}`);
-      if (error.status === 429) throw error;
+      if (error.status === 429 || error.status === 403) throw error;
       continue;
     }
     const items = [
@@ -71,6 +79,7 @@ const searchPost = async (info) => {
 // coalesce concurrent lookups instead of repeating catalog searches per episode.
 const findPost = async (info) => {
   const key = `${info.kind}:${info.imdbId ?? info.tmdbId}`;
+  if (VERIFIED_POSTS.has(key)) return VERIFIED_POSTS.get(key);
   const hit = postCache.get(key);
   if (hit !== undefined) return hit;
   if (pendingPosts.has(key)) return pendingPosts.get(key);
