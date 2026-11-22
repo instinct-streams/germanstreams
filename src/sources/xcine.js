@@ -129,7 +129,9 @@ export const xcine = {
       }
 
       return sources
-        .filter((s) => typeof s.url === 'string' && s.url.startsWith('http'))
+        // SuperVideo signs links to the resolver IP. Do not offer a broken direct
+        // mirror or silently spend relay bandwidth when Dropload works directly.
+        .filter((s) => typeof s.url === 'string' && s.url.startsWith('http') && !/supervideo|superplayer/i.test(s.name + s.url))
         .map((s) => ({ url: s.url, referer: pageUrl, hostLabel: s.name, rank: s.rank ?? 99 }));
     });
   },
