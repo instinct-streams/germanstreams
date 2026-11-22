@@ -33,6 +33,24 @@ const norm = (s) =>
 // xCine season posts title the entry "<Series> - Staffel N"; the series name is the base.
 const baseTitle = (alt) => alt.replace(/\s*[-–]\s*(staffel|season)\s*\d+\s*$/i, '').trim();
 
+// Some catalog pages are denied to datacenter IPs even when the sitemap is
+// accessible. Reader's HTML mode preserves the embedded identity for checking.
+// This fallback carries catalog HTML only, never media or private account data.
+let directCatalogBlockedUntil = 0;
+const fetchCatalogPage = async (url, timeoutMs = 1_000) => {
+  if (Date.now() >= directCatalogBlockedUntil) {
+    try { return await fetchText(url, { timeoutMs }); }
+    catch (error) {
+      if (error.status !== 403) throw error;
+      directCatalogBlockedUntil = Date.now() + 15 * 60_000;
+    }
+  }
+  return fetchText(`https://r.jina.ai/${url}`, {
+    headers: { 'X-Respond-With': 'html', 'X-Respond-Timing': 'html' },
+    timeoutMs: 2_000,
+  });
+};
+
 // Find the xCine post URL whose title and kind match. Returns the page URL and the
 // IMDb id embedded in the page, checking up to `maxCandidates` search hits.
 const nativeSearchPost = async (info) => {
@@ -41,9 +59,9 @@ const nativeSearchPost = async (info) => {
   for (const title of titles) {
     let html;
     try {
-      ({ text: html } = await fetchText(
+      ({ text: html } = await fetchCatalogPage(
         `${BASE}/?do=search&subaction=search&story=${encodeURIComponent(title)}`,
-        { timeoutMs: 3_000 },
+        1_000,
       ));
     } catch (error) {
       console.warn(`[xCine] search ${info.imdbId ?? info.tmdbId}: ${error.message}`);
@@ -61,7 +79,7 @@ const nativeSearchPost = async (info) => {
       if (!targets.has(norm(baseTitle(alt)))) continue;
       const isSeries = /\bserien\b/i.test(cat.trim());
       if ((info.kind === 'series') !== isSeries) continue;
-      const { text: page } = await fetchText(href, { timeoutMs: 8_000 });
+      const { text: page } = await fetchCatalogPage(href);
       const raw =
         page.match(/var rawId = \('((?:tt)?\d+)'/)?.[1] ??
         page.match(/devideosrc\.co\/(?:movie|serial)\/(tt\d+)/)?.[1];
@@ -143,10 +161,17 @@ const sitemapSearchPost = async (info) => {
   for (let i = 0; i < candidates.length; i += 4) {
     const results = await Promise.all(candidates.slice(i, i + 4).map(async ({ url }) => {
       try {
-        const { text } = await fetchText(url, { timeoutMs: 1_500 });
+        const { text } = await fetchCatalogPage(url);
         const imdbId = postIdentity(text);
-        return imdbId === info.imdbId ? { postUrl: url, imdbId } : null;
-      } catch { return null; }
+        if (imdbId === info.imdbId) {
+          console.log(`[xCine] catalog verified ${info.imdbId}`);
+          return { postUrl: url, imdbId };
+        }
+        return null;
+      } catch (error) {
+        console.warn(`[xCine] post verification: ${error.message}`);
+        return null;
+      }
     }));
     const match = results.find(Boolean);
     if (match) return match;
