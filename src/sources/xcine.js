@@ -250,6 +250,11 @@ export const xcine = {
         // mirror or silently spend relay bandwidth when Dropload works directly.
         .filter((s) => typeof s.url === 'string' && s.url.startsWith('http') && !/supervideo|superplayer/i.test(s.name + s.url))
         .map((s) => ({ url: s.url, referer: pageUrl, hostLabel: s.name, rank: s.rank ?? 99 }));
+    }).then((embeds) => {
+      // TtlCache.wrap applies its positive TTL after the callback returns.
+      // Override it here so a temporary catalog/player miss lasts only 5 min.
+      if (!embeds.length) cache.set(cacheKey, embeds, NEGATIVE_TTL);
+      return embeds;
     });
   },
 };
