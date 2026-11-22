@@ -17,9 +17,9 @@ const ADDON_ID = 'community.germanstreams.clean';
 
 const manifest = {
   id: ADDON_ID,
-  version: '1.1.1',
+  version: '1.2.0',
   name: 'GermanStreams',
-  description: 'Deutsche Streams von MeineCloud, MegaKino, Filmpalast und Filmo - eigenstaendiges, schnelles Addon.',
+  description: 'Deutsche Streams von MeineCloud, MegaKino, Filmpalast, xCine und Filmo - eigenstaendiges, schnelles Addon.',
   logo: 'https://upload.wikimedia.org/wikipedia/en/thumb/b/ba/Flag_of_Germany.svg/320px-Flag_of_Germany.svg.png',
   resources: ['stream'],
   types: ['movie', 'series'],
@@ -73,7 +73,7 @@ const getStreams = async (type, id, base) => {
 
 const LANDING = `<!doctype html><html lang="de"><head><meta charset="utf-8"><title>GermanStreams</title></head>
 <body style="font-family:sans-serif;max-width:40em;margin:4em auto"><h1>GermanStreams</h1>
-<p>Stremio-Addon fuer deutsche Streams (MeineCloud, MegaKino, Filmpalast, Filmo).</p>
+<p>Stremio-Addon fuer deutsche Streams (MeineCloud, MegaKino, Filmpalast, xCine, Filmo).</p>
 <p>Manifest: <a href="/manifest.json">/manifest.json</a></p></body></html>`;
 
 const sendJson = (res, code, obj) => {
