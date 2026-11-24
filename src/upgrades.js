@@ -66,7 +66,7 @@ export const filmo = {
   },
 };
 
-export const supportsExtra = (url) => /https:\/\/[^/]*byse[^/]*\/(?:d|e)\//i.test(url);
+export const supportsExtra = (url) => /https:\/\/[^/]*byse[^/]*\/(?:d|e)\//i.test(url) || /https:\/\/moflix-stream\.link\/e\//i.test(url);
 const byse = async ({ url }) => cache.wrap(`byse:${url}`, 5 * 60_000, async () => {
   const u = new URL(url);
   const code = u.pathname.split('/').filter(Boolean)[1];

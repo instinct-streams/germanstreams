@@ -108,10 +108,25 @@ const mixdrop = async ({ url, referer }) => {
   ];
 };
 
+// --- vidhide-style players (moflix-stream.click / .fans): the page (packed or plain)
+// holds absolute master.m3u8 links; pick the first.
+const vidhide = async ({ url, referer }) => {
+  const { text: html, finalUrl } = await fetchText(url, {
+    headers: referer ? { Referer: referer } : {},
+    timeoutMs: 9_000,
+  });
+  const unpacked = unpackAllFromHtml(html) || '';
+  const m3u8 = `${unpacked}\n${html}`.match(/https?:\/\/[^"'\s\\]+?\.m3u8[^"'\s\\]*/)?.[0];
+  if (!m3u8) return [];
+  const origin = new URL(finalUrl).origin;
+  return [{ url: m3u8, format: 'hls', headers: { Referer: `${origin}/` }, resolverLabel: 'VidHide' }];
+};
+
 const RESOLVERS = [
   { re: /dropload|dr0pstream/i, label: 'Dropload', run: (e) => packedHls(e, 'Dropload') },
   { re: /supervideo|superplayer/i, label: 'SuperVideo', run: (e) => packedHls(e, 'SuperVideo') },
   { re: /gxplayer/i, label: 'GXPlayer', run: gxplayer },
+  { re: /moflix-stream\.(?:click|fans)\/embed/i, label: 'VidHide', run: vidhide },
   { re: /firestream|frstream/i, label: 'Firestream', run: firestream },
   { re: /mixdrop|mxdrop/i, label: 'Mixdrop', run: mixdrop },
 ];
